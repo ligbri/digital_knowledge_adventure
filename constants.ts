@@ -1,15 +1,21 @@
 
+// --- MANUAL CONFIGURATION ---
+export const GAME_CONFIG = {
+  REQUIRED_PLAYERS: 2, // Set the number of players required to start
+  MOVEMENT_SPEED: 3,    // Set the speed of the game (higher is faster)
+};
+
 export const GAME_WIDTH = 800;
 export const GAME_HEIGHT = 400;
 
 // Replace the URL below with your actual Render.com URL after deployment
 // e.g., 'https://your-app-name.onrender.com'
-export const BACKEND_URL = 'https://dka-be.onrender.com'; // 这是一个演示地址，请替换为你自己的！
+export const BACKEND_URL = 'https://dka-be.onrender.com'; // 请替换为你自己的 Render URL
 
 export const PHYSICS = {
   GRAVITY: 0.6,
   JUMP_FORCE: -12,
-  INITIAL_SPEED: 6,
+  INITIAL_SPEED: GAME_CONFIG.MOVEMENT_SPEED, // Uses the manual config
   GroundLevel: 320,
 };
 

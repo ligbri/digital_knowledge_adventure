@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { GameStatus, Player, Platform, Obstacle, Coin, MultiPlayer } from '../types';
-import { GAME_WIDTH, GAME_HEIGHT, PHYSICS, PLAYER_SIZE, DURATION_SECONDS, COLORS } from '../constants';
+import { GAME_WIDTH, GAME_HEIGHT, PHYSICS, PLAYER_SIZE, DURATION_SECONDS, COLORS, GAME_CONFIG } from '../constants';
 import { QUIZ_DATA, Question } from '../quizData';
 import { MultiplayerClient } from '../utils/multiplayer';
 
@@ -21,7 +21,6 @@ interface UiState {
 
 // Global fixed room for the "One Room" requirement
 const GLOBAL_ROOM_ID = "TEAM_ARENA_01";
-const REQUIRED_PLAYERS = 10;
 
 const RunnerGame: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -185,10 +184,6 @@ const RunnerGame: React.FC = () => {
     mpClientRef.current?.toggleReady(uiState.roomId);
   };
 
-  const tryStartMultiplayer = () => {
-    mpClientRef.current?.startGame(uiState.roomId);
-  };
-
   // --- Core Game Logic ---
 
   const startGame = (mode: 'SINGLE' | 'MULTI') => {
@@ -242,8 +237,6 @@ const RunnerGame: React.FC = () => {
       if (isPit) {
         // Reduced pit size to be strictly within jump range
         // Max jump distance approx 240px. 
-        // Old: 120 + 60 = 180.
-        // New: 80 + 50 = 130 max. Safer.
         currentRightmostX += 80 + Math.random() * 50; 
       } else {
         const platformWidth = 300 + Math.random() * 500;
@@ -650,6 +643,8 @@ const RunnerGame: React.FC = () => {
   }, [tick]);
 
   const performJump = useCallback(() => {
+    // Check if we are in a state where jumping is allowed
+    // We do NOT want to jump if we are in lobby or typing name
     if (gameStateRef.current.status === GameStatus.PLAYING) {
       if (!playerRef.current.isJumping) {
         playerRef.current.vy = PHYSICS.JUMP_FORCE;
@@ -658,6 +653,15 @@ const RunnerGame: React.FC = () => {
       }
     }
   }, []);
+
+  // Screen tap handler for the container
+  const handleScreenTap = (e: React.MouseEvent | React.TouchEvent) => {
+    // Prevent default to avoid scrolling or zooming on some devices if needed
+    // but be careful not to block button clicks. 
+    // Since buttons are z-indexed above, they should handle their own clicks.
+    // We only trigger jump if the target is the game container/canvas area generally.
+    performJump();
+  };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -707,15 +711,17 @@ const RunnerGame: React.FC = () => {
                      </div>
                  ) : (
                     <div className="flex flex-col gap-4 animate-fadeIn">
-                        <h3 className="text-cyan-200 text-sm tracking-widest text-left">ENTER AGENT CODENAME</h3>
+                        <h3 className="text-cyan-200 text-sm tracking-widest text-left">ENTER YOUR NAME</h3>
                         <input 
                             type="text" 
-                            placeholder="CODENAME" 
+                            placeholder="YOUR NAME" 
                             className="bg-black/50 border border-gray-600 text-white p-3 focus:border-cyan-500 outline-none font-mono text-center text-lg uppercase"
                             maxLength={10}
                             value={uiState.playerName}
                             onChange={(e) => setUiState(prev => ({...prev, playerName: e.target.value}))}
                             onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
+                            onMouseDown={(e) => e.stopPropagation()} // Prevent jumping when clicking input
+                            onTouchStart={(e) => e.stopPropagation()}
                         />
                         <button 
                             onClick={joinRoom}
@@ -740,9 +746,8 @@ const RunnerGame: React.FC = () => {
 
   const renderWaitingRoom = () => {
     const me = uiState.players.find(p => p.id === uiState.myId);
-    // Strict requirement: 10 players AND everyone ready
-    const hasEnoughPlayers = uiState.players.length === REQUIRED_PLAYERS;
-    const allReady = hasEnoughPlayers && uiState.players.every(p => p.isReady);
+    // Strict requirement: N players AND everyone ready
+    const hasEnoughPlayers = uiState.players.length === GAME_CONFIG.REQUIRED_PLAYERS;
     
     return (
         <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-30">
@@ -752,7 +757,7 @@ const RunnerGame: React.FC = () => {
                         TEAM LOBBY
                     </h2>
                     <span className={`font-mono text-lg ${hasEnoughPlayers ? 'text-green-500' : 'text-yellow-500'}`}>
-                        {uiState.players.length} / {REQUIRED_PLAYERS} AGENTS
+                        {uiState.players.length} / {GAME_CONFIG.REQUIRED_PLAYERS} AGENTS
                     </span>
                 </div>
                 
@@ -765,7 +770,7 @@ const RunnerGame: React.FC = () => {
                             </span>
                         </div>
                     ))}
-                    {[...Array(Math.max(0, 10 - uiState.players.length))].map((_, i) => (
+                    {[...Array(Math.max(0, GAME_CONFIG.REQUIRED_PLAYERS - uiState.players.length))].map((_, i) => (
                         <div key={i} className="p-4 border border-gray-800 bg-black/50 opacity-50 flex items-center justify-center text-gray-600 text-sm animate-pulse">
                             WAITING FOR AGENT...
                         </div>
@@ -774,28 +779,16 @@ const RunnerGame: React.FC = () => {
 
                 <div className="flex justify-between items-center">
                     <button onClick={returnToMenu} className="text-red-500 hover:text-red-400 underline text-sm">ABORT MISSION</button>
-                    <div className="flex gap-4">
+                    <div className="flex flex-col items-end gap-2">
                         <button 
                             onClick={toggleReady}
                             className={`px-8 py-3 font-bold border ${me?.isReady ? 'bg-gray-800 text-gray-400 border-gray-600' : 'bg-green-600 text-black border-green-500 hover:bg-green-500'}`}
                         >
                             {me?.isReady ? 'CANCEL READY' : 'I AM READY'}
                         </button>
-                        
-                        <div className="relative group">
-                            <button 
-                                onClick={tryStartMultiplayer}
-                                className={`px-8 py-3 font-bold border transition-all ${allReady ? 'bg-cyan-600 text-white border-cyan-500 hover:shadow-[0_0_20px_rgba(6,182,212,0.6)]' : 'bg-gray-800 text-gray-500 border-gray-700 cursor-not-allowed opacity-50'}`}
-                                disabled={!allReady}
-                            >
-                                START MISSION
-                            </button>
-                            {!allReady && (
-                                <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-max bg-black border border-red-500 text-red-400 text-xs px-2 py-1 hidden group-hover:block">
-                                    {!hasEnoughPlayers ? `WAITING FOR ${REQUIRED_PLAYERS - uiState.players.length} MORE AGENTS` : 'WAITING FOR ALL TO BE READY'}
-                                </div>
-                            )}
-                        </div>
+                        <p className="text-xs text-gray-500 font-mono mt-2 text-right max-w-xs">
+                             GAME STARTS AUTOMATICALLY WHEN ALL {GAME_CONFIG.REQUIRED_PLAYERS} PLAYERS ARE READY
+                        </p>
                     </div>
                 </div>
             </div>
@@ -832,7 +825,11 @@ const RunnerGame: React.FC = () => {
   };
 
   return (
-    <div className="relative w-full h-full flex justify-center items-center bg-[#02020a] overflow-hidden select-none font-[Orbitron]">
+    <div 
+        className="relative w-full h-full flex justify-center items-center bg-[#02020a] overflow-hidden select-none font-[Orbitron]"
+        onMouseDown={handleScreenTap}
+        onTouchStart={handleScreenTap}
+    >
       {/* HUD */}
       {(gameStateRef.current.status === GameStatus.PLAYING || gameStateRef.current.status === GameStatus.QUIZ || gameStateRef.current.status === GameStatus.WAITING_RESULTS) && (
         <div className="absolute top-4 left-4 right-4 flex justify-between z-10 pointer-events-none">
@@ -853,19 +850,6 @@ const RunnerGame: React.FC = () => {
                     {formatTime(uiState.timeLeft)}s
                 </span>
             </div>
-        </div>
-      )}
-
-      {/* Mobile Jump Button */}
-      {gameStateRef.current.status === GameStatus.PLAYING && (
-        <div className="absolute bottom-6 right-6 z-20 md:hidden">
-          <button
-            onTouchStart={(e) => { e.preventDefault(); performJump(); }}
-            onClick={(e) => { e.preventDefault(); performJump(); }}
-            className="w-20 h-20 rounded-full bg-cyan-500/30 border-2 border-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.4)] flex items-center justify-center active:bg-cyan-500/60 active:scale-95 transition-all"
-          >
-            <span className="text-cyan-100 font-bold text-sm tracking-wider pointer-events-none">JUMP</span>
-          </button>
         </div>
       )}
 
@@ -892,7 +876,7 @@ const RunnerGame: React.FC = () => {
           </div>
       )}
 
-      {/* Single Player Game Over/Victory screens (Simplified as they use same logic but might want separate if single player) */}
+      {/* Single Player Game Over/Victory screens */}
       {(uiState.status === GameStatus.GAME_OVER || uiState.status === GameStatus.VICTORY) && gameStateRef.current.mode === 'SINGLE' && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20 backdrop-blur-sm">
           <div className={`text-center p-8 bg-black/90 border-2 ${uiState.status === GameStatus.VICTORY ? 'border-yellow-400' : 'border-red-600'} shadow-lg max-w-md w-full`}>
@@ -910,7 +894,7 @@ const RunnerGame: React.FC = () => {
 
       {/* Quiz Modal */}
       {uiState.status === GameStatus.QUIZ && uiState.activeQuiz && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-30 backdrop-blur-md">
+        <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-30 backdrop-blur-md" onMouseDown={e => e.stopPropagation()} onTouchStart={e => e.stopPropagation()}>
           <div className="w-full max-w-lg bg-[#050510] border border-green-500/50 p-6 relative">
              <div className="flex justify-between items-center border-b border-green-900/50 pb-2 mb-4">
                 <div className="text-xs text-gray-500">ENCRYPTED DATA FOUND</div>
