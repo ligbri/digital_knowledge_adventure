@@ -29,7 +29,10 @@ export class MultiplayerClient {
 
     // Connect to the backend server
     console.log("Connecting to:", BACKEND_URL);
-    this.socket = window.io(BACKEND_URL);
+    // Force WebSocket transport to avoid Render/proxy issues with polling
+    this.socket = window.io(BACKEND_URL, {
+        transports: ['websocket'] 
+    });
 
     this.socket.on('connect', () => {
         console.log("Connected to server", this.socket.id);
@@ -59,6 +62,11 @@ export class MultiplayerClient {
     // Listen for individual player updates (score/status)
     this.socket.on('player_updated', (player: MultiPlayer) => {
         this.onMessageCallback({ type: 'PLAYER_UPDATED', payload: player });
+    });
+
+    // Listen for early game end (all players finished)
+    this.socket.on('force_game_over', (players: MultiPlayer[]) => {
+        this.onMessageCallback({ type: 'FORCE_GAME_OVER', payload: players });
     });
 
     this.socket.on('error_msg', (msg: string) => {

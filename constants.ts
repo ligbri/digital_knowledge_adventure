@@ -1,8 +1,8 @@
 
 // --- MANUAL CONFIGURATION ---
 export const GAME_CONFIG = {
-  REQUIRED_PLAYERS: 2, // Set the number of players required to start
-  MOVEMENT_SPEED: 3,    // Set the speed of the game (higher is faster)
+  REQUIRED_PLAYERS: 3, // Set the number of players required to start
+  MOVEMENT_SPEED: 4,    // Set the speed of the game (higher is faster)
 };
 
 export const GAME_WIDTH = 800;

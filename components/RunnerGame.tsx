@@ -17,6 +17,7 @@ interface UiState {
   players: MultiPlayer[];
   myId: string;
   isConnecting: boolean;
+  returnTimer: number; // For the 10s return to menu countdown
 }
 
 // Global fixed room for the "One Room" requirement
@@ -68,7 +69,8 @@ const RunnerGame: React.FC = () => {
     playerName: '',
     players: [],
     myId: '',
-    isConnecting: false
+    isConnecting: false,
+    returnTimer: 10
   });
 
   // Lobby Step State: 'MENU' | 'NAME_INPUT'
@@ -158,6 +160,16 @@ const RunnerGame: React.FC = () => {
     } else if (msg.type === 'START_GAME') {
       mpStartTimeRef.current = msg.payload.startTime;
       startGame('MULTI');
+    } else if (msg.type === 'FORCE_GAME_OVER') {
+      // All players finished early
+      gameStateRef.current.status = GameStatus.LEADERBOARD;
+      // Update final list state before showing leaderboard
+      setUiState(prev => ({
+          ...prev,
+          players: msg.payload, // Ensure we have the server's final authoritative list
+          status: GameStatus.LEADERBOARD,
+          returnTimer: 10 // Reset timer
+      }));
     }
   }, []);
 
@@ -222,10 +234,43 @@ const RunnerGame: React.FC = () => {
 
   const returnToMenu = () => {
     gameStateRef.current.status = GameStatus.IDLE;
+    // Disconnect ensures we free up the server slot
+    mpClientRef.current?.disconnect();
     setUiState(prev => ({ ...prev, status: GameStatus.IDLE, activeQuiz: null, players: [], isConnecting: false, playerName: '' }));
     setLobbyStep('MENU');
-    mpClientRef.current?.disconnect();
   };
+
+  // Auto Return to Menu Timer
+  useEffect(() => {
+    let interval: number | null = null;
+    if (uiState.status === GameStatus.LEADERBOARD) {
+        interval = window.setInterval(() => {
+            setUiState(prev => {
+                const newVal = prev.returnTimer - 1;
+                if (newVal <= 0) {
+                    // Time up, force return
+                    if (interval) clearInterval(interval);
+                    // We need to call returnToMenu, but we can't call it directly inside setState
+                    // So we handle the side effect in a separate useEffect or timeout
+                    // Just set to 0 here
+                    return { ...prev, returnTimer: 0 };
+                }
+                return { ...prev, returnTimer: newVal };
+            });
+        }, 1000);
+    }
+    return () => {
+        if (interval) clearInterval(interval);
+    };
+  }, [uiState.status]);
+
+  // Handle the side effect of timer hitting 0
+  useEffect(() => {
+      if (uiState.status === GameStatus.LEADERBOARD && uiState.returnTimer === 0) {
+          returnToMenu();
+      }
+  }, [uiState.returnTimer, uiState.status]);
+
 
   const spawnEntities = (lastPlatformX: number) => {
     const buffer = GAME_WIDTH * 1.5;
@@ -493,7 +538,7 @@ const RunnerGame: React.FC = () => {
                 }
                 if (gameStateRef.current.status !== GameStatus.LEADERBOARD) {
                     gameStateRef.current.status = GameStatus.LEADERBOARD;
-                    setUiState(prev => ({ ...prev, status: GameStatus.LEADERBOARD }));
+                    setUiState(prev => ({ ...prev, status: GameStatus.LEADERBOARD, returnTimer: 10 }));
                 }
              } else {
                 gameStateRef.current.timeLeft = remaining;
@@ -512,8 +557,7 @@ const RunnerGame: React.FC = () => {
         if (Math.random() < 0.05) { 
              const currentScore = gameStateRef.current.score;
              setUiState(prev => {
-                // We send update only if score changed is handled in updateState efficiency logic ideally
-                // Here we just fire it
+                // Fire update
                 mpClientRef.current?.updateState(prev.roomId, currentScore, 'ALIVE');
                 return prev;
              });
@@ -802,21 +846,27 @@ const RunnerGame: React.FC = () => {
      return (
         <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-40 backdrop-blur-md">
             <div className="w-full max-w-lg bg-[#0a0a12] border-2 border-yellow-500 p-8 shadow-[0_0_50px_rgba(234,179,8,0.3)]">
-                <h2 className="text-3xl text-yellow-400 font-black text-center mb-6 tracking-widest">MISSION COMPLETE</h2>
+                <div className="flex justify-between items-start mb-6">
+                    <h2 className="text-3xl text-yellow-400 font-black tracking-widest">MISSION COMPLETE</h2>
+                    <div className="text-right">
+                        <div className="text-xs text-gray-500">AUTO-RETURN</div>
+                        <div className="text-xl font-mono text-cyan-400">{uiState.returnTimer}s</div>
+                    </div>
+                </div>
                 
-                <div className="space-y-2 mb-8">
+                <div className="space-y-2 mb-8 max-h-[50vh] overflow-y-auto pr-2 custom-scrollbar">
                     {sortedPlayers.map((p, idx) => (
                         <div key={p.id} className={`flex items-center p-3 border-b border-gray-800 ${idx === 0 ? 'bg-yellow-900/20' : ''}`}>
                             <div className="w-10 text-xl font-bold text-gray-500">#{idx + 1}</div>
-                            <div className="flex-1 text-white font-mono text-lg">{p.name}</div>
+                            <div className="flex-1 text-white font-mono text-lg">{p.name} {p.id === uiState.myId ? '(YOU)' : ''}</div>
                             <div className="text-yellow-400 font-bold text-xl">{p.score} <span className="text-xs text-yellow-600">pts</span></div>
                         </div>
                     ))}
                 </div>
 
                 <div className="flex justify-center gap-4">
-                    <button onClick={returnToMenu} className="px-8 py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold border border-gray-600">
-                        RETURN TO LOBBY
+                    <button onClick={returnToMenu} className="px-8 py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold border border-gray-600 w-full uppercase">
+                        Return Menu (Exit Server)
                     </button>
                 </div>
             </div>
