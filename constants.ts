@@ -27,7 +27,7 @@ export const PLAYER_SIZE = {
   width: 30,
   height: 30,
 };
-S
+
 export const OBSTACLE_SIZE = {
   width: 30,
   height: 40,
