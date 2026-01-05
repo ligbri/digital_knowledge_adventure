@@ -22,6 +22,8 @@ export interface Player extends Entity {
   vy: number; // Vertical velocity
   isJumping: boolean;
   color: string;
+  lives: number;
+  invulnerableUntil: number; // Timestamp for invincibility end
 }
 
 export interface Platform extends Entity {
@@ -53,4 +55,24 @@ export interface GameState {
   score: number;
   timeLeft: number;
   speed: number;
+}
+
+// Visual Effects
+export interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  life: number; // 0 to 1
+  color: string;
+  size: number;
+}
+
+export interface Ghost {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  alpha: number;
+  color: string;
 }

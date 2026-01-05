@@ -1,7 +1,7 @@
 
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { GameStatus, Player, Platform, Obstacle, Coin, MultiPlayer } from '../types';
-import { GAME_WIDTH, GAME_HEIGHT, PHYSICS, PLAYER_SIZE, DURATION_SECONDS, COLORS, GAME_CONFIG } from '../constants';
+import { GameStatus, Player, Platform, Obstacle, Coin, MultiPlayer, Particle, Ghost } from '../types';
+import { GAME_WIDTH, GAME_HEIGHT, PHYSICS, PLAYER_SIZE, DURATION_SECONDS, COLORS, GAME_CONFIG, VISUALS, GAME_TEXT, SPAWN_CONFIG, OBSTACLE_SIZE } from '../constants';
 import { QUIZ_DATA, Question } from '../quizData';
 import { MultiplayerClient } from '../utils/multiplayer';
 
@@ -10,14 +10,15 @@ interface UiState {
   timeLeft: number;
   status: GameStatus;
   activeQuiz: Question | null;
-  quizTimeLeft: number; // Added for quiz timer
+  quizTimeLeft: number; 
   // Multiplayer UI
   roomId: string;
   playerName: string;
   players: MultiPlayer[];
   myId: string;
   isConnecting: boolean;
-  returnTimer: number; // For the 10s return to menu countdown
+  returnTimer: number; 
+  showJumpHint: boolean;
 }
 
 // Global fixed room for the "One Room" requirement
@@ -42,6 +43,9 @@ const RunnerGame: React.FC = () => {
     speed: PHYSICS.INITIAL_SPEED,
     distanceTraveled: 0,
     mode: 'SINGLE' as 'SINGLE' | 'MULTI',
+    frameCount: 0,
+    lastSpawnX: 0, // Track where the next entity should spawn
+    lastEntityWasPit: false, // Prevents consecutive pits (Fix for "Super Wide Pits")
   });
 
   const playerRef = useRef<Player>({
@@ -52,11 +56,15 @@ const RunnerGame: React.FC = () => {
     vy: 0,
     isJumping: false,
     color: COLORS.PLAYER,
+    lives: GAME_CONFIG.MAX_LIVES,
+    invulnerableUntil: 0
   });
 
   const platformsRef = useRef<Platform[]>([]);
   const obstaclesRef = useRef<Obstacle[]>([]);
   const coinsRef = useRef<Coin[]>([]);
+  const particlesRef = useRef<Particle[]>([]);
+  const ghostsRef = useRef<Ghost[]>([]);
   
   // React State
   const [uiState, setUiState] = useState<UiState>({
@@ -70,14 +78,15 @@ const RunnerGame: React.FC = () => {
     players: [],
     myId: '',
     isConnecting: false,
-    returnTimer: 10
+    returnTimer: 10,
+    showJumpHint: false
   });
 
   // Lobby Step State: 'MENU' | 'NAME_INPUT'
   const [lobbyStep, setLobbyStep] = useState<'MENU' | 'NAME_INPUT'>('MENU');
 
   // --- Sound Effects ---
-  const playSound = (type: 'jump' | 'coin' | 'special' | 'hit' | 'win') => {
+  const playSound = (type: 'jump' | 'coin' | 'special' | 'hit' | 'win' | 'shield_break') => {
     if (!audioCtxRef.current) {
         audioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
     }
@@ -91,55 +100,111 @@ const RunnerGame: React.FC = () => {
     gain.connect(ctx.destination);
     const now = ctx.currentTime;
 
-    if (type === 'jump') {
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(200, now);
-      osc.frequency.exponentialRampToValueAtTime(600, now + 0.15);
-      gain.gain.setValueAtTime(0.2, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
-      osc.start();
-      osc.stop(now + 0.15);
-    } else if (type === 'coin') {
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(1500, now);
-      osc.frequency.setValueAtTime(2000, now + 0.05);
-      gain.gain.setValueAtTime(0.1, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
-      osc.start();
-      osc.stop(now + 0.1);
-    } else if (type === 'special') {
-      osc.type = 'square';
-      osc.frequency.setValueAtTime(800, now);
-      osc.frequency.linearRampToValueAtTime(1200, now + 0.1);
-      gain.gain.setValueAtTime(0.15, now);
-      gain.gain.linearRampToValueAtTime(0, now + 0.25);
-      osc.start();
-      osc.stop(now + 0.25);
-    } else if (type === 'hit') {
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(100, now);
-      osc.frequency.linearRampToValueAtTime(50, now + 0.3);
-      gain.gain.setValueAtTime(0.3, now);
-      gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
-      osc.start();
-      osc.stop(now + 0.3);
-    } else if (type === 'win') {
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(440, now);
-      osc.frequency.setValueAtTime(554, now + 0.1);
-      osc.frequency.setValueAtTime(659, now + 0.2);
-      gain.gain.setValueAtTime(0.3, now);
-      gain.gain.linearRampToValueAtTime(0, now + 1.5);
-      osc.start();
-      osc.stop(now + 1.5);
+    switch (type) {
+      case 'jump':
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(200, now);
+        osc.frequency.exponentialRampToValueAtTime(600, now + 0.15);
+        gain.gain.setValueAtTime(0.2, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.15);
+        break;
+      case 'coin':
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(1500, now);
+        osc.frequency.setValueAtTime(2000, now + 0.05);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.1);
+        break;
+      case 'special':
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(800, now);
+        osc.frequency.linearRampToValueAtTime(1200, now + 0.1);
+        gain.gain.setValueAtTime(0.15, now);
+        gain.gain.linearRampToValueAtTime(0, now + 0.25);
+        break;
+      case 'hit':
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(100, now);
+        osc.frequency.linearRampToValueAtTime(50, now + 0.3);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+        break;
+      case 'shield_break':
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(300, now);
+        osc.frequency.linearRampToValueAtTime(100, now + 0.4);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.4);
+        break;
+      case 'win':
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.setValueAtTime(554, now + 0.1);
+        osc.frequency.setValueAtTime(659, now + 0.2);
+        gain.gain.setValueAtTime(0.3, now);
+        gain.gain.linearRampToValueAtTime(0, now + 1.5);
+        break;
+    }
+    osc.start();
+    osc.stop(now + (type === 'win' ? 1.5 : 0.3));
+  };
+
+  // --- Particle System ---
+  const spawnParticles = (x: number, y: number, color: string, count: number) => {
+    for (let i = 0; i < count; i++) {
+        const angle = Math.random() * Math.PI * 2;
+        const speed = Math.random() * 3 + 1;
+        particlesRef.current.push({
+            x,
+            y,
+            vx: Math.cos(angle) * speed,
+            vy: Math.sin(angle) * speed,
+            life: 1.0,
+            color: color,
+            size: Math.random() * 3 + 1
+        });
+    }
+  };
+
+  const updateParticles = () => {
+    for (let i = particlesRef.current.length - 1; i >= 0; i--) {
+        const p = particlesRef.current[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= 0.05; // Fade out speed
+        if (p.life <= 0) particlesRef.current.splice(i, 1);
+    }
+  };
+
+  const updateGhosts = () => {
+    // Add new ghost periodically
+    if (gameStateRef.current.frameCount % VISUALS.GHOST_INTERVAL === 0 && gameStateRef.current.status === GameStatus.PLAYING) {
+        const p = playerRef.current;
+        // Only spawn ghost if moving fast or jumping
+        if (gameStateRef.current.speed > 0) {
+            ghostsRef.current.push({
+                x: p.x,
+                y: p.y,
+                width: p.width,
+                height: p.height,
+                alpha: 0.5,
+                color: p.color
+            });
+        }
+    }
+    // Update existing ghosts
+    for (let i = ghostsRef.current.length - 1; i >= 0; i--) {
+        const g = ghostsRef.current[i];
+        g.x -= gameStateRef.current.speed; // Move with world
+        g.alpha -= 0.03;
+        if (g.alpha <= 0) ghostsRef.current.splice(i, 1);
     }
   };
 
   // --- Multiplayer Logic ---
   const handleMpMessage = useCallback((msg: any) => {
-    
     if (msg.type === 'CONNECTED') {
-        // Just updated connection status, actual room join happens next
+        // Just updated connection status
     } else if (msg.type === 'ROOM_UPDATE') {
         setUiState(prev => {
             const newId = msg.mySocketId || prev.myId;
@@ -148,7 +213,7 @@ const RunnerGame: React.FC = () => {
                 players: msg.payload, 
                 myId: newId,
                 status: GameStatus.WAITING_ROOM,
-                isConnecting: false // Connected and joined
+                isConnecting: false 
             };
         });
     } else if (msg.type === 'PLAYER_UPDATED') {
@@ -161,14 +226,12 @@ const RunnerGame: React.FC = () => {
       mpStartTimeRef.current = msg.payload.startTime;
       startGame('MULTI');
     } else if (msg.type === 'FORCE_GAME_OVER') {
-      // All players finished early
       gameStateRef.current.status = GameStatus.LEADERBOARD;
-      // Update final list state before showing leaderboard
       setUiState(prev => ({
           ...prev,
-          players: msg.payload, // Ensure we have the server's final authoritative list
+          players: msg.payload,
           status: GameStatus.LEADERBOARD,
-          returnTimer: 10 // Reset timer
+          returnTimer: 10
       }));
     }
   }, []);
@@ -182,13 +245,11 @@ const RunnerGame: React.FC = () => {
 
   const joinRoom = () => {
     if (!uiState.playerName) return;
-    
     setUiState(prev => ({
         ...prev,
-        roomId: GLOBAL_ROOM_ID, // Enforce global room
+        roomId: GLOBAL_ROOM_ID,
         isConnecting: true
     }));
-
     mpClientRef.current?.connect(GLOBAL_ROOM_ID, '', uiState.playerName);
   };
 
@@ -199,6 +260,8 @@ const RunnerGame: React.FC = () => {
   // --- Core Game Logic ---
 
   const startGame = (mode: 'SINGLE' | 'MULTI') => {
+    const initialPlatWidth = GAME_WIDTH + 200;
+    
     gameStateRef.current = {
       status: GameStatus.PLAYING,
       timeLeft: DURATION_SECONDS,
@@ -206,6 +269,9 @@ const RunnerGame: React.FC = () => {
       speed: PHYSICS.INITIAL_SPEED,
       distanceTraveled: 0,
       mode: mode,
+      frameCount: 0,
+      lastSpawnX: initialPlatWidth, // Initialize cursor
+      lastEntityWasPit: false, // Reset logic for new game
     };
 
     playerRef.current = {
@@ -216,11 +282,15 @@ const RunnerGame: React.FC = () => {
       vy: 0,
       isJumping: false,
       color: COLORS.PLAYER,
+      lives: GAME_CONFIG.MAX_LIVES,
+      invulnerableUntil: 0
     };
 
-    platformsRef.current = [{ id: 1, x: 0, y: PHYSICS.GroundLevel, width: GAME_WIDTH + 200, height: GAME_HEIGHT - PHYSICS.GroundLevel }];
+    platformsRef.current = [{ id: 1, x: 0, y: PHYSICS.GroundLevel, width: initialPlatWidth, height: GAME_HEIGHT - PHYSICS.GroundLevel }];
     obstaclesRef.current = [];
     coinsRef.current = [];
+    particlesRef.current = [];
+    ghostsRef.current = [];
 
     setUiState(prev => ({
       ...prev,
@@ -228,17 +298,43 @@ const RunnerGame: React.FC = () => {
       timeLeft: DURATION_SECONDS,
       status: GameStatus.PLAYING,
       activeQuiz: null,
-      quizTimeLeft: 10
+      quizTimeLeft: 10,
+      showJumpHint: true
     }));
   };
 
-  const returnToMenu = () => {
+  const returnToMenu = useCallback(() => {
+    // 1. Reset Internal Refs
     gameStateRef.current.status = GameStatus.IDLE;
-    // Disconnect ensures we free up the server slot
-    mpClientRef.current?.disconnect();
-    setUiState(prev => ({ ...prev, status: GameStatus.IDLE, activeQuiz: null, players: [], isConnecting: false, playerName: '' }));
+    
+    // 2. Disconnect Socket if active to prevent background updates
+    if (mpClientRef.current) {
+        mpClientRef.current.disconnect();
+    }
+    
+    // 3. Completely Reset UI State to Initial Values
+    setUiState({
+        score: 0,
+        timeLeft: DURATION_SECONDS,
+        status: GameStatus.IDLE,
+        activeQuiz: null,
+        quizTimeLeft: 10,
+        roomId: GLOBAL_ROOM_ID,
+        playerName: '',
+        players: [],
+        myId: '',
+        isConnecting: false,
+        returnTimer: 10,
+        showJumpHint: false
+    });
+    
+    // 4. Return to Menu Step
     setLobbyStep('MENU');
-  };
+    
+    // 5. Re-init socket client for next connection
+    mpClientRef.current = new MultiplayerClient(handleMpMessage);
+
+  }, [handleMpMessage]);
 
   // Auto Return to Menu Timer
   useEffect(() => {
@@ -248,11 +344,7 @@ const RunnerGame: React.FC = () => {
             setUiState(prev => {
                 const newVal = prev.returnTimer - 1;
                 if (newVal <= 0) {
-                    // Time up, force return
                     if (interval) clearInterval(interval);
-                    // We need to call returnToMenu, but we can't call it directly inside setState
-                    // So we handle the side effect in a separate useEffect or timeout
-                    // Just set to 0 here
                     return { ...prev, returnTimer: 0 };
                 }
                 return { ...prev, returnTimer: newVal };
@@ -269,50 +361,97 @@ const RunnerGame: React.FC = () => {
       if (uiState.status === GameStatus.LEADERBOARD && uiState.returnTimer === 0) {
           returnToMenu();
       }
-  }, [uiState.returnTimer, uiState.status]);
+  }, [uiState.returnTimer, uiState.status, returnToMenu]);
 
 
-  const spawnEntities = (lastPlatformX: number) => {
+  const spawnEntities = () => {
     const buffer = GAME_WIDTH * 1.5;
-    let currentRightmostX = lastPlatformX;
+    // Use the persistent cursor instead of calculating from the last platform
+    let currentSpawnX = gameStateRef.current.lastSpawnX;
 
-    while (currentRightmostX < GAME_WIDTH + buffer) {
-      const isPit = Math.random() > 0.8; 
+    // PREVIOUS LOGIC (BUG):
+    // const isSafeZone = (DURATION_SECONDS - gameStateRef.current.timeLeft) < GAME_CONFIG.SAFE_ZONE_DURATION;
+    // This checked CURRENT time, but we generate chunks 5-8 seconds into the FUTURE due to buffering.
+
+    while (currentSpawnX < GAME_WIDTH + buffer) {
       
+      // NEW LOGIC (FIX):
+      // Check the ABSOLUTE distance of where this new chunk will be placed.
+      // If the world-distance is less than the distance a player runs in SAFE_ZONE_DURATION, it's safe.
+      const absoluteSpawnX = gameStateRef.current.distanceTraveled + currentSpawnX;
+      // 60 frames per second * speed * seconds = Total Safe Pixels
+      const safeDistance = (GAME_CONFIG.MOVEMENT_SPEED * 60 * GAME_CONFIG.SAFE_ZONE_DURATION) + GAME_WIDTH;
+      
+      const isSafeZone = absoluteSpawnX < safeDistance;
+
+      // LOGIC UPDATE: Use OBSTACLE_PROBABILITY to trigger a "Hazard".
+      // If Hazard triggered, 50% chance it is a PIT, 50% chance it is a PLATFORM WITH OBSTACLES.
+      const isHazard = !isSafeZone && Math.random() < SPAWN_CONFIG.OBSTACLE_PROBABILITY;
+      
+      // FIX FOR SUPER WIDE PITS: 
+      // If the last entity was a pit, we MUST spawn a platform now.
+      // We cannot allow consecutive pits.
+      const mustBePlatform = gameStateRef.current.lastEntityWasPit;
+
+      const isPit = !mustBePlatform && isHazard && Math.random() < 0.5;
+
       if (isPit) {
-        // Reduced pit size to be strictly within jump range
-        // Max jump distance approx 240px. 
-        currentRightmostX += 80 + Math.random() * 50; 
+        // HAZARD TYPE 1: PIT (Gap)
+        // STRICT CONTROL: 3 * Obstacle Width
+        const gap = OBSTACLE_SIZE.width * 3; 
+        currentSpawnX += gap;
+        gameStateRef.current.lastEntityWasPit = true;
       } else {
-        const platformWidth = 300 + Math.random() * 500;
+        // HAZARD TYPE 2: PLATFORM (with potential obstacles) OR SAFE PLATFORM
+        
+        // Use SPAWN_CONFIG for platform width
+        const platformWidth = SPAWN_CONFIG.MIN_PLATFORM_WIDTH + Math.random() * (SPAWN_CONFIG.MAX_PLATFORM_WIDTH - SPAWN_CONFIG.MIN_PLATFORM_WIDTH);
         const newPlatform: Platform = {
           id: Date.now() + Math.random(),
-          x: currentRightmostX,
+          x: currentSpawnX,
           y: PHYSICS.GroundLevel,
           width: platformWidth,
           height: GAME_HEIGHT - PHYSICS.GroundLevel
         };
         platformsRef.current.push(newPlatform);
+        gameStateRef.current.lastEntityWasPit = false;
         
         const availableWidth = platformWidth - 100;
-        const startX = currentRightmostX + 50;
+        const startX = currentSpawnX + 50;
         const addedObstacles: Obstacle[] = [];
 
-        if (Math.random() > 0.3) {
-          const obsX = startX + Math.random() * availableWidth;
-          const obstacle: Obstacle = {
-            id: Date.now() + Math.random(),
-            x: obsX,
-            y: PHYSICS.GroundLevel - 40,
-            width: 30,
-            height: 40,
-            type: 'CRATE'
-          };
-          obstaclesRef.current.push(obstacle);
-          addedObstacles.push(obstacle);
+        // Obstacle Spawning Logic
+        // If isHazard is true (and it wasn't a pit), then we MUST spawn obstacles here to satisfy the hazard condition.
+        if (isHazard) {
+            const minObs = SPAWN_CONFIG.MIN_OBSTACLES_PER_PLATFORM;
+            const maxObs = SPAWN_CONFIG.MAX_OBSTACLES_PER_PLATFORM;
+            const numObs = Math.floor(Math.random() * (maxObs - minObs + 1)) + minObs;
+
+            for(let k=0; k < numObs; k++) {
+                 // Try to spread them out slightly if multiple
+                 const obsX = startX + Math.random() * availableWidth;
+                 
+                 // Simple check to avoid stacking obstacles exactly on top of each other
+                 const overlapsOther = addedObstacles.some(o => Math.abs(o.x - obsX) < 40);
+                 
+                 if (!overlapsOther) {
+                     const obstacle: Obstacle = {
+                        id: Date.now() + Math.random() + k,
+                        x: obsX,
+                        y: PHYSICS.GroundLevel - OBSTACLE_SIZE.height,
+                        width: OBSTACLE_SIZE.width,
+                        height: OBSTACLE_SIZE.height,
+                        type: 'CRATE'
+                      };
+                      obstaclesRef.current.push(obstacle);
+                      addedObstacles.push(obstacle);
+                 }
+            }
         }
 
-        const numCoins = Math.floor(Math.random() * 3);
+        // Coins spawning logic using Config
+        // Coins can appear on both Safe Platforms and Obstacle Platforms
+        const numCoins = Math.floor(Math.random() * (SPAWN_CONFIG.MAX_COINS_PER_PLATFORM - SPAWN_CONFIG.MIN_COINS_PER_PLATFORM + 1)) + SPAWN_CONFIG.MIN_COINS_PER_PLATFORM;
         for(let i=0; i<numCoins; i++) {
           const coinW = 20;
           const coinH = 20;
@@ -327,7 +466,7 @@ const RunnerGame: React.FC = () => {
           );
 
           if (!overlapsObstacle) {
-            const isSpecial = Math.random() < 0.4;
+            const isSpecial = Math.random() < SPAWN_CONFIG.SPECIAL_COIN_CHANCE;
             coinsRef.current.push({
               id: Date.now() + Math.random() + i,
               x: coinX,
@@ -340,9 +479,11 @@ const RunnerGame: React.FC = () => {
             });
           }
         }
-        currentRightmostX += platformWidth;
+        currentSpawnX += platformWidth;
       }
     }
+    // Update the state ref with the new cursor position
+    gameStateRef.current.lastSpawnX = currentSpawnX;
   };
 
   const handleQuizAnswer = (index: number) => {
@@ -356,6 +497,7 @@ const RunnerGame: React.FC = () => {
     
     if (isCorrect) {
       gameStateRef.current.score += 5;
+      spawnParticles(playerRef.current.x, playerRef.current.y, '#00ff00', 20);
       playSound('win');
     } else {
       playSound('hit');
@@ -377,8 +519,7 @@ const RunnerGame: React.FC = () => {
         timer = window.setInterval(() => {
             setUiState(prev => {
                 if (prev.quizTimeLeft <= 1) {
-                    // Time is up!
-                    handleQuizAnswer(-1); // Pass -1 to indicate timeout
+                    handleQuizAnswer(-1); 
                     return { ...prev, quizTimeLeft: 0 };
                 }
                 return { ...prev, quizTimeLeft: prev.quizTimeLeft - 1 };
@@ -393,6 +534,8 @@ const RunnerGame: React.FC = () => {
   const updatePhysics = () => {
     const player = playerRef.current;
     const game = gameStateRef.current;
+    
+    game.frameCount++;
 
     // Movement
     player.vy += PHYSICS.GRAVITY;
@@ -419,13 +562,27 @@ const RunnerGame: React.FC = () => {
 
     // Pit Fall
     if (player.y > GAME_HEIGHT) {
-      handleDeath();
-      return;
+       if (player.lives > 1) {
+           // Respawn mechanic: Deduct life, reset position to air, grant temporary invulnerability
+           player.lives--;
+           player.invulnerableUntil = Date.now() + 1500;
+           player.y = PHYSICS.GroundLevel - 200; // Drop from above
+           player.vy = 0;
+           playSound('shield_break');
+           spawnParticles(player.x, GAME_HEIGHT, COLORS.PLAYER_HIT, VISUALS.PARTICLE_COUNT_HIT);
+       } else {
+           // No lives left, game over
+           playSound('hit');
+           spawnParticles(player.x, player.y, COLORS.PLAYER_HIT, 30);
+           handleDeath(false);
+           return;
+       }
     }
 
     // Move World
     const moveSpeed = game.speed;
     game.distanceTraveled += moveSpeed;
+    game.lastSpawnX -= moveSpeed; // Move the spawn cursor along with the world
 
     platformsRef.current.forEach(p => p.x -= moveSpeed);
     obstaclesRef.current.forEach(o => o.x -= moveSpeed);
@@ -435,10 +592,8 @@ const RunnerGame: React.FC = () => {
     obstaclesRef.current = obstaclesRef.current.filter(o => o.x + o.width > -100);
     coinsRef.current = coinsRef.current.filter(c => c.x + c.width > -100);
 
-    const lastPlatform = platformsRef.current[platformsRef.current.length - 1];
-    if (lastPlatform) {
-      spawnEntities(lastPlatform.x + lastPlatform.width);
-    }
+    // Check spawn based on the tracked cursor, not the last platform
+    spawnEntities();
 
     // Obstacle Collision
     for (const obs of obstaclesRef.current) {
@@ -449,9 +604,26 @@ const RunnerGame: React.FC = () => {
         player.y + padding < obs.y + obs.height &&
         player.y + player.height > obs.y + padding
       ) {
-        playSound('hit');
-        handleDeath();
-        return;
+         // Check if invincible
+         if (Date.now() < player.invulnerableUntil) {
+             continue;
+         }
+
+         if (player.lives > 1) {
+             // Lost a life but survived
+             player.lives--;
+             player.invulnerableUntil = Date.now() + 1500; // 1.5s Invulnerability
+             playSound('shield_break');
+             spawnParticles(player.x, player.y, COLORS.PLAYER_HIT, VISUALS.PARTICLE_COUNT_HIT);
+             
+             // Shake effect logic could go here (or screen flash in draw)
+         } else {
+             // Final death
+             playSound('hit');
+             spawnParticles(player.x, player.y, COLORS.PLAYER_HIT, 30);
+             handleDeath(false);
+             return;
+         }
       }
     }
 
@@ -464,7 +636,8 @@ const RunnerGame: React.FC = () => {
           player.y + player.height > coin.y
       ) {
         coin.collected = true;
-        
+        spawnParticles(coin.x, coin.y, coin.type === 'SPECIAL' ? COLORS.COIN_SPECIAL : COLORS.COIN, VISUALS.PARTICLE_COUNT_COIN);
+
         if (coin.type === 'SPECIAL') {
           playSound('special');
           const randomQuiz = QUIZ_DATA[Math.floor(Math.random() * QUIZ_DATA.length)];
@@ -485,8 +658,8 @@ const RunnerGame: React.FC = () => {
     }
   };
 
-  const handleDeath = () => {
-    playSound('hit');
+  const handleDeath = (instant: boolean) => {
+    playerRef.current.lives = 0;
     
     if (gameStateRef.current.mode === 'MULTI') {
         gameStateRef.current.status = GameStatus.WAITING_RESULTS;
@@ -524,9 +697,8 @@ const RunnerGame: React.FC = () => {
     
     // --- TIMER LOGIC ---
     if (currentGameMode === 'MULTI' && mpStartTimeRef.current) {
-         // Wait for start time
          if (Date.now() < mpStartTimeRef.current) {
-             // Countdown logic could go here
+             // Countdown
          } else {
              const elapsed = (Date.now() - mpStartTimeRef.current) / 1000;
              const remaining = DURATION_SECONDS - elapsed;
@@ -557,7 +729,6 @@ const RunnerGame: React.FC = () => {
         if (Math.random() < 0.05) { 
              const currentScore = gameStateRef.current.score;
              setUiState(prev => {
-                // Fire update
                 mpClientRef.current?.updateState(prev.roomId, currentScore, 'ALIVE');
                 return prev;
              });
@@ -567,6 +738,8 @@ const RunnerGame: React.FC = () => {
     // --- GAME LOOP ---
     if (gameStateRef.current.status === GameStatus.PLAYING) {
       updatePhysics();
+      updateParticles();
+      updateGhosts();
     }
     
     const integerTime = Math.ceil(gameStateRef.current.timeLeft);
@@ -654,28 +827,49 @@ const RunnerGame: React.FC = () => {
       ctx.fillText(isSpecial ? '?' : '1', cx, cy);
     });
 
-    // 6. Player
+    // 6. Ghosts (Afterimages)
+    ghostsRef.current.forEach(g => {
+        ctx.globalAlpha = g.alpha;
+        ctx.fillStyle = g.color;
+        ctx.fillRect(g.x, g.y, g.width, g.height);
+        ctx.globalAlpha = 1.0;
+    });
+
+    // 7. Particles
+    particlesRef.current.forEach(p => {
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.globalAlpha = 1.0;
+    });
+
+    // 8. Player
     const p = playerRef.current;
     if (gameStateRef.current.status !== GameStatus.WAITING_RESULTS && gameStateRef.current.status !== GameStatus.GAME_OVER) {
-         if (gameStateRef.current.speed > 0) {
-            ctx.globalAlpha = 0.3;
-            ctx.fillStyle = COLORS.PLAYER;
-            ctx.fillRect(p.x - 10, p.y, p.width, p.height);
-            ctx.globalAlpha = 1.0;
+         
+         // Invulnerability blinking
+         const isInvincible = Date.now() < p.invulnerableUntil;
+         if (isInvincible && Math.floor(Date.now() / 100) % 2 === 0) {
+             // Don't draw this frame for blink effect (strobe)
+         } else {
+             // Draw Player
+             let drawH = p.height;
+             let drawW = p.width;
+             if (p.isJumping) {
+                drawH = p.height * 0.9;
+                drawW = p.width * 0.9;
+             }
+             ctx.shadowBlur = 20;
+             ctx.shadowColor = COLORS.PLAYER_GLOW;
+             // Flash white if recently hit
+             ctx.fillStyle = (isInvincible && Math.floor(Date.now() / 50) % 2 === 0) ? '#fff' : COLORS.PLAYER; 
+             ctx.fillRect(p.x, p.y, drawW, drawH);
+             ctx.shadowBlur = 0;
+             ctx.fillStyle = '#fff';
+             ctx.fillRect(p.x + drawW - 8, p.y + 6, 6, 4);
          }
-         let drawH = p.height;
-         let drawW = p.width;
-         if (p.isJumping) {
-            drawH = p.height * 0.9;
-            drawW = p.width * 0.9;
-         }
-         ctx.shadowBlur = 20;
-         ctx.shadowColor = COLORS.PLAYER_GLOW;
-         ctx.fillStyle = COLORS.PLAYER;
-         ctx.fillRect(p.x, p.y, drawW, drawH);
-         ctx.shadowBlur = 0;
-         ctx.fillStyle = '#fff';
-         ctx.fillRect(p.x + drawW - 8, p.y + 6, 6, 4);
     }
   };
 
@@ -687,23 +881,18 @@ const RunnerGame: React.FC = () => {
   }, [tick]);
 
   const performJump = useCallback(() => {
-    // Check if we are in a state where jumping is allowed
-    // We do NOT want to jump if we are in lobby or typing name
     if (gameStateRef.current.status === GameStatus.PLAYING) {
       if (!playerRef.current.isJumping) {
         playerRef.current.vy = PHYSICS.JUMP_FORCE;
         playerRef.current.isJumping = true;
         playSound('jump');
+        setUiState(prev => ({...prev, showJumpHint: false})); // Hide hint on first jump
+        spawnParticles(playerRef.current.x + PLAYER_SIZE.width/2, playerRef.current.y + PLAYER_SIZE.height, COLORS.GROUND_NEON, VISUALS.PARTICLE_COUNT_JUMP);
       }
     }
   }, []);
 
-  // Screen tap handler for the container
   const handleScreenTap = (e: React.MouseEvent | React.TouchEvent) => {
-    // Prevent default to avoid scrolling or zooming on some devices if needed
-    // but be careful not to block button clicks. 
-    // Since buttons are z-indexed above, they should handle their own clicks.
-    // We only trigger jump if the target is the game container/canvas area generally.
     performJump();
   };
 
@@ -724,9 +913,10 @@ const RunnerGame: React.FC = () => {
   const renderLobby = () => (
     <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20 backdrop-blur-sm">
       <div className="text-center p-8 bg-[#0a0a12] border border-cyan-500/50 shadow-[0_0_50px_rgba(6,182,212,0.2)] max-w-lg w-full">
-         <h1 className="text-4xl font-black mb-8 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-600">
-            DIGITAL RUNNER
+         <h1 className="text-4xl font-black mb-2 text-transparent bg-clip-text bg-gradient-to-r from-cyan-400 to-purple-600">
+            {GAME_TEXT.TITLE}
          </h1>
+         <p className="text-gray-500 text-sm mb-8 tracking-widest">{GAME_TEXT.SUBTITLE}</p>
          
          {lobbyStep === 'MENU' && (
              <div className="flex flex-col gap-6 items-center">
@@ -734,14 +924,14 @@ const RunnerGame: React.FC = () => {
                     onClick={() => setLobbyStep('NAME_INPUT')}
                     className="w-64 py-5 bg-gradient-to-r from-purple-900 to-purple-800 border-2 border-purple-500 hover:from-purple-800 hover:to-purple-700 hover:scale-105 text-white font-black text-xl tracking-widest transition-all shadow-lg shadow-purple-900/50 skew-x-[-10deg]"
                  >
-                    JOIN THE TEAM
+                    {GAME_TEXT.BTN_JOIN}
                  </button>
                  
                  <button 
                     onClick={() => startGame('SINGLE')}
                     className="w-40 py-2 bg-transparent border border-gray-600 text-gray-400 hover:text-cyan-400 hover:border-cyan-400 font-mono text-sm transition-all uppercase"
                  >
-                    Single Play
+                    {GAME_TEXT.BTN_SINGLE}
                  </button>
              </div>
          )}
@@ -750,12 +940,12 @@ const RunnerGame: React.FC = () => {
              <div className="flex flex-col gap-4">
                  {uiState.isConnecting ? (
                      <div className="p-8 border border-purple-500 bg-purple-900/20">
-                        <p className="text-purple-400 font-mono animate-pulse text-lg mb-2">CONNECTING TO SERVER...</p>
+                        <p className="text-purple-400 font-mono animate-pulse text-lg mb-2">{GAME_TEXT.LOBBY_CONNECTING}</p>
                         <p className="text-gray-500 text-xs">(Free server might take up to 50s to wake up)</p>
                      </div>
                  ) : (
                     <div className="flex flex-col gap-4 animate-fadeIn">
-                        <h3 className="text-cyan-200 text-sm tracking-widest text-left">ENTER YOUR NAME</h3>
+                        <h3 className="text-cyan-200 text-sm tracking-widest text-left">{GAME_TEXT.LOBBY_ENTER_NAME}</h3>
                         <input 
                             type="text" 
                             placeholder="YOUR NAME" 
@@ -764,7 +954,7 @@ const RunnerGame: React.FC = () => {
                             value={uiState.playerName}
                             onChange={(e) => setUiState(prev => ({...prev, playerName: e.target.value}))}
                             onKeyDown={(e) => e.key === 'Enter' && joinRoom()}
-                            onMouseDown={(e) => e.stopPropagation()} // Prevent jumping when clicking input
+                            onMouseDown={(e) => e.stopPropagation()} 
                             onTouchStart={(e) => e.stopPropagation()}
                         />
                         <button 
@@ -772,13 +962,13 @@ const RunnerGame: React.FC = () => {
                             disabled={!uiState.playerName}
                             className="px-6 py-3 bg-cyan-900/40 border border-cyan-500 hover:bg-cyan-500 hover:text-black text-cyan-400 font-bold transition-all uppercase disabled:opacity-50 mt-2"
                         >
-                            ENTER WAITING ROOM
+                            {GAME_TEXT.BTN_ENTER_WAITING}
                         </button>
                         <button 
                             onClick={() => setLobbyStep('MENU')}
                             className="text-gray-600 hover:text-white text-xs mt-4 underline"
                         >
-                            Back to Menu
+                            {GAME_TEXT.BTN_BACK}
                         </button>
                     </div>
                  )}
@@ -790,7 +980,6 @@ const RunnerGame: React.FC = () => {
 
   const renderWaitingRoom = () => {
     const me = uiState.players.find(p => p.id === uiState.myId);
-    // Strict requirement: N players AND everyone ready
     const hasEnoughPlayers = uiState.players.length === GAME_CONFIG.REQUIRED_PLAYERS;
     
     return (
@@ -798,7 +987,7 @@ const RunnerGame: React.FC = () => {
             <div className="w-full max-w-2xl bg-[#0f0f1a] border border-cyan-500 p-8">
                 <div className="flex justify-between items-end border-b border-gray-700 pb-2 mb-6">
                     <h2 className="text-2xl text-cyan-400 font-bold tracking-widest">
-                        TEAM LOBBY
+                        {GAME_TEXT.WAITING_TITLE}
                     </h2>
                     <span className={`font-mono text-lg ${hasEnoughPlayers ? 'text-green-500' : 'text-yellow-500'}`}>
                         {uiState.players.length} / {GAME_CONFIG.REQUIRED_PLAYERS} AGENTS
@@ -816,19 +1005,19 @@ const RunnerGame: React.FC = () => {
                     ))}
                     {[...Array(Math.max(0, GAME_CONFIG.REQUIRED_PLAYERS - uiState.players.length))].map((_, i) => (
                         <div key={i} className="p-4 border border-gray-800 bg-black/50 opacity-50 flex items-center justify-center text-gray-600 text-sm animate-pulse">
-                            WAITING FOR AGENT...
+                            {GAME_TEXT.WAITING_STATUS}
                         </div>
                     ))}
                 </div>
 
                 <div className="flex justify-between items-center">
-                    <button onClick={returnToMenu} className="text-red-500 hover:text-red-400 underline text-sm">ABORT MISSION</button>
+                    <button onClick={returnToMenu} className="text-red-500 hover:text-red-400 underline text-sm">{GAME_TEXT.BTN_ABORT}</button>
                     <div className="flex flex-col items-end gap-2">
                         <button 
                             onClick={toggleReady}
                             className={`px-8 py-3 font-bold border ${me?.isReady ? 'bg-gray-800 text-gray-400 border-gray-600' : 'bg-green-600 text-black border-green-500 hover:bg-green-500'}`}
                         >
-                            {me?.isReady ? 'CANCEL READY' : 'I AM READY'}
+                            {me?.isReady ? GAME_TEXT.BTN_CANCEL : GAME_TEXT.BTN_READY}
                         </button>
                         <p className="text-xs text-gray-500 font-mono mt-2 text-right max-w-xs">
                              GAME STARTS AUTOMATICALLY WHEN ALL {GAME_CONFIG.REQUIRED_PLAYERS} PLAYERS ARE READY
@@ -847,7 +1036,7 @@ const RunnerGame: React.FC = () => {
         <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-40 backdrop-blur-md">
             <div className="w-full max-w-lg bg-[#0a0a12] border-2 border-yellow-500 p-8 shadow-[0_0_50px_rgba(234,179,8,0.3)]">
                 <div className="flex justify-between items-start mb-6">
-                    <h2 className="text-3xl text-yellow-400 font-black tracking-widest">MISSION COMPLETE</h2>
+                    <h2 className="text-3xl text-yellow-400 font-black tracking-widest">{GAME_TEXT.LEADERBOARD_TITLE}</h2>
                     <div className="text-right">
                         <div className="text-xs text-gray-500">AUTO-RETURN</div>
                         <div className="text-xl font-mono text-cyan-400">{uiState.returnTimer}s</div>
@@ -866,7 +1055,7 @@ const RunnerGame: React.FC = () => {
 
                 <div className="flex justify-center gap-4">
                     <button onClick={returnToMenu} className="px-8 py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold border border-gray-600 w-full uppercase">
-                        Return Menu (Exit Server)
+                        {GAME_TEXT.BTN_MENU}
                     </button>
                 </div>
             </div>
@@ -883,9 +1072,18 @@ const RunnerGame: React.FC = () => {
       {/* HUD */}
       {(gameStateRef.current.status === GameStatus.PLAYING || gameStateRef.current.status === GameStatus.QUIZ || gameStateRef.current.status === GameStatus.WAITING_RESULTS) && (
         <div className="absolute top-4 left-4 right-4 flex justify-between z-10 pointer-events-none">
-            <div className="bg-black/80 px-6 py-2 border-l-4 border-yellow-400 transform skew-x-[-10deg]">
-                <span className="text-2xl text-yellow-400 font-bold -skew-x-[10deg]">{uiState.score} <span className="text-sm">bits</span></span>
+            <div className="flex flex-col gap-1">
+                <div className="bg-black/80 px-6 py-2 border-l-4 border-yellow-400 transform skew-x-[-10deg]">
+                    <span className="text-2xl text-yellow-400 font-bold -skew-x-[10deg]">{uiState.score} <span className="text-sm">bits</span></span>
+                </div>
+                {/* Lives Indicator (New Feature) */}
+                <div className="flex gap-1 ml-2 mt-1 transform skew-x-[-10deg]">
+                    {[...Array(GAME_CONFIG.MAX_LIVES)].map((_, i) => (
+                        <div key={i} className={`w-6 h-2 border border-red-500 transition-all duration-300 ${i < playerRef.current.lives ? 'bg-red-500 shadow-[0_0_10px_red]' : 'bg-transparent opacity-30'}`} />
+                    ))}
+                </div>
             </div>
+            
             {gameStateRef.current.mode === 'MULTI' && (
                 <div className="flex gap-2">
                      {uiState.players.filter(p => p.id !== uiState.myId).map(p => (
@@ -901,6 +1099,15 @@ const RunnerGame: React.FC = () => {
                 </span>
             </div>
         </div>
+      )}
+      
+      {/* Jump Hint Overlay (New Feature) */}
+      {uiState.showJumpHint && gameStateRef.current.status === GameStatus.PLAYING && (
+          <div className="absolute left-8 top-1/2 -translate-y-1/2 z-20 pointer-events-none">
+              <div className="text-cyan-400 font-bold text-2xl tracking-widest animate-pulse border-l-4 border-cyan-400 pl-4 bg-black/40 p-2 backdrop-blur-sm">
+                  {GAME_TEXT.HINT_JUMP}
+              </div>
+          </div>
       )}
 
       <canvas
@@ -919,8 +1126,8 @@ const RunnerGame: React.FC = () => {
       {uiState.status === GameStatus.WAITING_RESULTS && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20">
               <div className="text-center">
-                  <h2 className="text-2xl text-gray-400 animate-pulse mb-2">SYNCING WITH SERVER...</h2>
-                  <p className="text-gray-600">Waiting for other runners to finish</p>
+                  <h2 className="text-2xl text-gray-400 animate-pulse mb-2">{GAME_TEXT.MSG_SYNC}</h2>
+                  <p className="text-gray-600">{GAME_TEXT.MSG_WAIT_OTHERS}</p>
                   <p className="text-cyan-500 text-4xl mt-4 font-bold">{Math.ceil(uiState.timeLeft)}s</p>
               </div>
           </div>
@@ -931,12 +1138,12 @@ const RunnerGame: React.FC = () => {
         <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-20 backdrop-blur-sm">
           <div className={`text-center p-8 bg-black/90 border-2 ${uiState.status === GameStatus.VICTORY ? 'border-yellow-400' : 'border-red-600'} shadow-lg max-w-md w-full`}>
             <h2 className={`text-5xl font-black mb-4 ${uiState.status === GameStatus.VICTORY ? 'text-yellow-400' : 'text-red-600'}`}>
-                {uiState.status === GameStatus.VICTORY ? 'COMPLETE' : 'FAILURE'}
+                {uiState.status === GameStatus.VICTORY ? GAME_TEXT.VICTORY : GAME_TEXT.GAME_OVER}
             </h2>
             <div className="text-3xl font-bold mb-8 text-white">SCORE: {uiState.score}</div>
             <div className="flex flex-col gap-4">
-                <button onClick={() => startGame('SINGLE')} className="px-8 py-3 bg-gray-700 hover:bg-white hover:text-black text-white font-bold transition-all uppercase">RETRY</button>
-                <button onClick={returnToMenu} className="px-8 py-3 border border-gray-600 text-gray-400 hover:text-white transition-all uppercase">MENU</button>
+                <button onClick={() => startGame('SINGLE')} className="px-8 py-3 bg-gray-700 hover:bg-white hover:text-black text-white font-bold transition-all uppercase">{GAME_TEXT.BTN_RETRY}</button>
+                <button onClick={returnToMenu} className="px-8 py-3 border border-gray-600 text-gray-400 hover:text-white transition-all uppercase">{GAME_TEXT.BTN_MENU}</button>
             </div>
           </div>
         </div>
