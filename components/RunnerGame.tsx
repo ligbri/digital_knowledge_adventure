@@ -1162,7 +1162,7 @@ const RunnerGame: React.FC = () => {
              
              <p className="text-lg text-green-100 font-mono mb-6 mt-4">{">"} {uiState.activeQuiz.question}</p>
              <div className="grid grid-cols-1 gap-3">
-                {uiState.activeQuiz.options.map((option, idx) => (
+                {uiState.activeQuiz.options.map((option: string, idx) => (
                   <button key={idx} onClick={() => handleQuizAnswer(idx)} className="p-3 text-left bg-green-900/10 border border-green-500/30 hover:bg-green-500/20 text-green-300 font-mono transition-colors">
                     {option}
                   </button>
