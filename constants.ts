@@ -12,7 +12,7 @@ export const GAME_HEIGHT = 400;
 
 // Replace the URL below with your actual Render.com URL after deployment
 // e.g., 'https://your-app-name.onrender.com'
-export const BACKEND_URL = 'https://dka-game-server-xxxx.onrender.com'; // 请替换为你自己的 Render URL
+export const BACKEND_URL = 'https://dka-be.onrender.com'; // 请替换为你自己的 Render URL
 
 export const PHYSICS = {
   // To increase horizontal jump distance: Decrease GRAVITY or Increase MOVEMENT_SPEED/JUMP_FORCE
@@ -27,7 +27,7 @@ export const PLAYER_SIZE = {
   width: 30,
   height: 30,
 };
-
+S
 export const OBSTACLE_SIZE = {
   width: 30,
   height: 40,
