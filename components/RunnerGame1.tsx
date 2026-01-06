@@ -17,8 +17,8 @@ interface UiState {
   players: MultiPlayer[];
   myId: string;
   isConnecting: boolean;
+  returnTimer: number; 
   showJumpHint: boolean;
-  // Removed returnTimer
 }
 
 // Global fixed room for the "One Room" requirement
@@ -78,6 +78,7 @@ const RunnerGame: React.FC = () => {
     players: [],
     myId: '',
     isConnecting: false,
+    returnTimer: 10,
     showJumpHint: false
   });
 
@@ -226,12 +227,11 @@ const RunnerGame: React.FC = () => {
       startGame('MULTI');
     } else if (msg.type === 'FORCE_GAME_OVER') {
       gameStateRef.current.status = GameStatus.LEADERBOARD;
-      // Received final signal from server: All players are done.
-      // Now we show the leaderboard. No auto-return timer.
       setUiState(prev => ({
           ...prev,
           players: msg.payload,
-          status: GameStatus.LEADERBOARD
+          status: GameStatus.LEADERBOARD,
+          returnTimer: 10
       }));
     }
   }, []);
@@ -324,6 +324,7 @@ const RunnerGame: React.FC = () => {
         players: [],
         myId: '',
         isConnecting: false,
+        returnTimer: 10,
         showJumpHint: false
     });
     
@@ -335,10 +336,42 @@ const RunnerGame: React.FC = () => {
 
   }, [handleMpMessage]);
 
+  // Auto Return to Menu Timer
+  useEffect(() => {
+    let interval: number | null = null;
+    if (uiState.status === GameStatus.LEADERBOARD) {
+        interval = window.setInterval(() => {
+            setUiState(prev => {
+                const newVal = prev.returnTimer - 1;
+                if (newVal <= 0) {
+                    if (interval) clearInterval(interval);
+                    return { ...prev, returnTimer: 0 };
+                }
+                return { ...prev, returnTimer: newVal };
+            });
+        }, 1000);
+    }
+    return () => {
+        if (interval) clearInterval(interval);
+    };
+  }, [uiState.status]);
+
+  // Handle the side effect of timer hitting 0
+  useEffect(() => {
+      if (uiState.status === GameStatus.LEADERBOARD && uiState.returnTimer === 0) {
+          returnToMenu();
+      }
+  }, [uiState.returnTimer, uiState.status, returnToMenu]);
+
+
   const spawnEntities = () => {
     const buffer = GAME_WIDTH * 1.5;
     // Use the persistent cursor instead of calculating from the last platform
     let currentSpawnX = gameStateRef.current.lastSpawnX;
+
+    // PREVIOUS LOGIC (BUG):
+    // const isSafeZone = (DURATION_SECONDS - gameStateRef.current.timeLeft) < GAME_CONFIG.SAFE_ZONE_DURATION;
+    // This checked CURRENT time, but we generate chunks 5-8 seconds into the FUTURE due to buffering.
 
     while (currentSpawnX < GAME_WIDTH + buffer) {
       
@@ -672,14 +705,13 @@ const RunnerGame: React.FC = () => {
              
              if (remaining <= 0) {
                 gameStateRef.current.timeLeft = 0;
-                
-                // If the player is still active when time runs out, they win the survival leg
                 if (gameStateRef.current.status === GameStatus.PLAYING || gameStateRef.current.status === GameStatus.QUIZ) {
                     handleVictory(); 
                 }
-                
-                // CRITICAL FIX: In Multiplayer, do NOT transition to LEADERBOARD locally based on time.
-                // We stay in WAITING_RESULTS until the server sends 'FORCE_GAME_OVER' (meaning ALL players are done).
+                if (gameStateRef.current.status !== GameStatus.LEADERBOARD) {
+                    gameStateRef.current.status = GameStatus.LEADERBOARD;
+                    setUiState(prev => ({ ...prev, status: GameStatus.LEADERBOARD, returnTimer: 10 }));
+                }
              } else {
                 gameStateRef.current.timeLeft = remaining;
              }
@@ -1006,7 +1038,8 @@ const RunnerGame: React.FC = () => {
                 <div className="flex justify-between items-start mb-6">
                     <h2 className="text-3xl text-yellow-400 font-black tracking-widest">{GAME_TEXT.LEADERBOARD_TITLE}</h2>
                     <div className="text-right">
-                        {/* Auto Return Display Removed */}
+                        <div className="text-xs text-gray-500">AUTO-RETURN</div>
+                        <div className="text-xl font-mono text-cyan-400">{uiState.returnTimer}s</div>
                     </div>
                 </div>
                 
@@ -1051,8 +1084,15 @@ const RunnerGame: React.FC = () => {
                 </div>
             </div>
             
-            {/* OTHER PLAYERS SCORE DISPLAY REMOVED */}
-
+            {gameStateRef.current.mode === 'MULTI' && (
+                <div className="flex gap-2">
+                     {uiState.players.filter(p => p.id !== uiState.myId).map(p => (
+                         <div key={p.id} className="bg-black/50 px-3 py-1 border border-gray-700 text-xs text-gray-300">
+                             {p.name}: {p.score}
+                         </div>
+                     ))}
+                </div>
+            )}
             <div className={`bg-black/80 px-6 py-2 border-r-4 ${uiState.timeLeft <= 5 ? 'border-red-500 animate-pulse' : 'border-cyan-500'} transform skew-x-[10deg]`}>
                 <span className={`text-2xl font-bold skew-x-[-10deg] ${uiState.timeLeft <= 5 ? 'text-red-500' : 'text-cyan-400'}`}>
                     {formatTime(uiState.timeLeft)}s
@@ -1122,7 +1162,7 @@ const RunnerGame: React.FC = () => {
              
              <p className="text-lg text-green-100 font-mono mb-6 mt-4">{">"} {uiState.activeQuiz.question}</p>
              <div className="grid grid-cols-1 gap-3">
-                {uiState.activeQuiz.options.map((option: string, idx: number) => (
+                {uiState.activeQuiz.options.map((option: string, idx) => (
                   <button key={idx} onClick={() => handleQuizAnswer(idx)} className="p-3 text-left bg-green-900/10 border border-green-500/30 hover:bg-green-500/20 text-green-300 font-mono transition-colors">
                     {option}
                   </button>
