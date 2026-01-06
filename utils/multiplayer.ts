@@ -55,7 +55,7 @@ export class MultiplayerClient {
     });
 
     // Listen for game start
-    this.socket.on('start_game', (data: { startTime: number }) => {
+    this.socket.on('start_game', (data: { startTime: number, config?: any }) => {
         this.onMessageCallback({ type: 'START_GAME', payload: data });
     });
 
@@ -80,9 +80,9 @@ export class MultiplayerClient {
     });
   }
 
-  toggleReady(roomId: string) {
+  toggleReady(roomId: string, config?: any) {
     if (!this.socket) return;
-    this.socket.emit('toggle_ready', roomId);
+    this.socket.emit('toggle_ready', { roomId, config });
   }
 
   kickPlayer(roomId: string, targetId: string) {

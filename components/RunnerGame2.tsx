@@ -39,7 +39,6 @@ const RunnerGame: React.FC = () => {
   const gameStateRef = useRef({
     status: GameStatus.IDLE,
     timeLeft: DURATION_SECONDS,
-    totalDuration: DURATION_SECONDS, // Added for syncing duration
     score: 0,
     speed: PHYSICS.INITIAL_SPEED,
     distanceTraveled: 0,
@@ -270,8 +269,7 @@ const RunnerGame: React.FC = () => {
         }));
     } else if (msg.type === 'START_GAME') {
       mpStartTimeRef.current = msg.payload.startTime;
-      // Pass the config from server
-      startGame('MULTI', msg.payload.config);
+      startGame('MULTI');
     } else if (msg.type === 'FORCE_GAME_OVER') {
       gameStateRef.current.status = GameStatus.LEADERBOARD;
       // Store reset time
@@ -307,13 +305,7 @@ const RunnerGame: React.FC = () => {
   };
 
   const toggleReady = () => {
-    // Send local config when toggling ready
-    const config = {
-        duration: DURATION_SECONDS,
-        speed: PHYSICS.INITIAL_SPEED,
-        maxLives: GAME_CONFIG.MAX_LIVES
-    };
-    mpClientRef.current?.toggleReady(uiState.roomId, config);
+    mpClientRef.current?.toggleReady(uiState.roomId);
   };
 
   const handleKickPlayer = (targetId: string) => {
@@ -322,20 +314,14 @@ const RunnerGame: React.FC = () => {
 
   // --- Core Game Logic ---
 
-  const startGame = (mode: 'SINGLE' | 'MULTI', config?: any) => {
+  const startGame = (mode: 'SINGLE' | 'MULTI') => {
     const initialPlatWidth = GAME_WIDTH + 200;
     
-    // Priority: Config passed in -> Local Constants
-    const initDuration = config?.duration ?? DURATION_SECONDS;
-    const initSpeed = config?.speed ?? PHYSICS.INITIAL_SPEED;
-    const initLives = config?.maxLives ?? GAME_CONFIG.MAX_LIVES;
-
     gameStateRef.current = {
       status: GameStatus.PLAYING,
-      timeLeft: initDuration,
-      totalDuration: initDuration, // Store synchronized total duration
+      timeLeft: DURATION_SECONDS,
       score: 0,
-      speed: initSpeed,
+      speed: PHYSICS.INITIAL_SPEED,
       distanceTraveled: 0,
       mode: mode,
       frameCount: 0,
@@ -351,7 +337,7 @@ const RunnerGame: React.FC = () => {
       vy: 0,
       isJumping: false,
       color: COLORS.PLAYER,
-      lives: initLives,
+      lives: GAME_CONFIG.MAX_LIVES,
       invulnerableUntil: 0
     };
 
@@ -364,7 +350,7 @@ const RunnerGame: React.FC = () => {
     setUiState(prev => ({
       ...prev,
       score: 0,
-      timeLeft: initDuration,
+      timeLeft: DURATION_SECONDS,
       status: GameStatus.PLAYING,
       activeQuiz: null,
       quizTimeLeft: 10,
@@ -686,9 +672,7 @@ const RunnerGame: React.FC = () => {
              // Countdown
          } else {
              const elapsed = (Date.now() - mpStartTimeRef.current) / 1000;
-             // Use synchronized totalDuration instead of DURATION_SECONDS constant
-             const duration = gameStateRef.current.totalDuration || DURATION_SECONDS;
-             const remaining = duration - elapsed;
+             const remaining = DURATION_SECONDS - elapsed;
              
              if (remaining <= 0) {
                 gameStateRef.current.timeLeft = 0;
