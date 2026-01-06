@@ -207,11 +207,20 @@ const RunnerGame: React.FC = () => {
     } else if (msg.type === 'ROOM_UPDATE') {
         setUiState(prev => {
             const newId = msg.mySocketId || prev.myId;
+            
+            // CRITICAL FIX: Only switch status to WAITING_ROOM if we are in the initial connection/lobby phase.
+            // If we are already playing or in the leaderboard phase, getting a ROOM_UPDATE (e.g. someone left) 
+            // should NOT kick us back to the waiting room.
+            let nextStatus = prev.status;
+            if (prev.status === GameStatus.IDLE || prev.status === GameStatus.WAITING_ROOM || prev.isConnecting) {
+                nextStatus = GameStatus.WAITING_ROOM;
+            }
+
             return { 
                 ...prev, 
                 players: msg.payload, 
                 myId: newId,
-                status: GameStatus.WAITING_ROOM,
+                status: nextStatus,
                 isConnecting: false 
             };
         });
