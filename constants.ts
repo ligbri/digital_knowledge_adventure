@@ -2,7 +2,7 @@
 // --- MANUAL CONFIGURATION ---
 export const GAME_CONFIG = {
   REQUIRED_PLAYERS: 2, // Set the number of players required to start
-  MOVEMENT_SPEED: 4.5,    // Increased slightly for better flow and wider jumps
+  MOVEMENT_SPEED: 4,    // Increased slightly for better flow and wider jumps
   SAFE_ZONE_DURATION: 3, // Seconds at start with no obstacles (New Feature)
   MAX_LIVES: 2,          // Total lives per run (New Feature)
 };
@@ -33,7 +33,7 @@ export const OBSTACLE_SIZE = {
   height: 40,
 };
 
-export const DURATION_SECONDS = 30;
+export const DURATION_SECONDS = 60;
 
 // --- SPAWN CONFIGURATION (New Feature: Configurable obstacles/coins) ---
 export const SPAWN_CONFIG = {
