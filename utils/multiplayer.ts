@@ -65,8 +65,14 @@ export class MultiplayerClient {
     });
 
     // Listen for early game end (all players finished)
-    this.socket.on('force_game_over', (players: MultiPlayer[]) => {
-        this.onMessageCallback({ type: 'FORCE_GAME_OVER', payload: players });
+    this.socket.on('force_game_over', (data: { players: MultiPlayer[], resetTime: number }) => {
+        this.onMessageCallback({ type: 'FORCE_GAME_OVER', payload: data });
+    });
+    
+    // Listen for being kicked
+    this.socket.on('kicked', () => {
+        this.onMessageCallback({ type: 'KICKED' });
+        this.disconnect();
     });
 
     this.socket.on('error_msg', (msg: string) => {
@@ -77,6 +83,11 @@ export class MultiplayerClient {
   toggleReady(roomId: string) {
     if (!this.socket) return;
     this.socket.emit('toggle_ready', roomId);
+  }
+
+  kickPlayer(roomId: string, targetId: string) {
+    if (!this.socket) return;
+    this.socket.emit('kick_player', { roomId, targetId });
   }
 
   startGame(roomId: string) {

@@ -18,7 +18,6 @@ interface UiState {
   myId: string;
   isConnecting: boolean;
   showJumpHint: boolean;
-  // Removed returnTimer
 }
 
 // Global fixed room for the "One Room" requirement
@@ -34,6 +33,7 @@ const RunnerGame: React.FC = () => {
   // Multiplayer Client Ref
   const mpClientRef = useRef<MultiplayerClient | null>(null);
   const mpStartTimeRef = useRef<number | null>(null);
+  const mpResetTimeRef = useRef<number | null>(null);
 
   // Game State Refs
   const gameStateRef = useRef({
@@ -200,6 +200,37 @@ const RunnerGame: React.FC = () => {
     }
   };
 
+  const returnToMenu = useCallback(() => {
+    // 1. Reset Internal Refs
+    gameStateRef.current.status = GameStatus.IDLE;
+    
+    // 2. Disconnect Socket if active to prevent background updates
+    if (mpClientRef.current) {
+        mpClientRef.current.disconnect();
+    }
+    
+    // 3. Completely Reset UI State to Initial Values
+    setUiState({
+        score: 0,
+        timeLeft: DURATION_SECONDS,
+        status: GameStatus.IDLE,
+        activeQuiz: null,
+        quizTimeLeft: 10,
+        roomId: GLOBAL_ROOM_ID,
+        playerName: '',
+        players: [],
+        myId: '',
+        isConnecting: false,
+        showJumpHint: false
+    });
+    
+    // 4. Return to Menu Step
+    setLobbyStep('MENU');
+    
+    // 5. Re-init socket client for next connection
+    mpClientRef.current = new MultiplayerClient(handleMpMessage);
+  }, []); // handleMpMessage is defined below, so we use empty deps or useRef for it to avoid circular
+
   // --- Multiplayer Logic ---
   const handleMpMessage = useCallback((msg: any) => {
     if (msg.type === 'CONNECTED') {
@@ -208,12 +239,18 @@ const RunnerGame: React.FC = () => {
         setUiState(prev => {
             const newId = msg.mySocketId || prev.myId;
             
-            // CRITICAL FIX: Only switch status to WAITING_ROOM if we are in the initial connection/lobby phase.
-            // If we are already playing or in the leaderboard phase, getting a ROOM_UPDATE (e.g. someone left) 
-            // should NOT kick us back to the waiting room.
             let nextStatus = prev.status;
+            // 1. If connecting/idle -> go to Waiting Room
             if (prev.status === GameStatus.IDLE || prev.status === GameStatus.WAITING_ROOM || prev.isConnecting) {
                 nextStatus = GameStatus.WAITING_ROOM;
+            }
+            // 2. Special Case: Captain Return. 
+            // If we are on Leaderboard, but Server says we are back in LOBBY (implied by this update message resetting us), 
+            // we should go to WAITING_ROOM.
+            // Note: Since 'status' isn't explicitly sent in ROOM_UPDATE payload (it's just players),
+            // we rely on the context. If players are reset (not ready, score 0), it implies lobby.
+            if (prev.status === GameStatus.LEADERBOARD) {
+                 nextStatus = GameStatus.WAITING_ROOM;
             }
 
             return { 
@@ -235,15 +272,20 @@ const RunnerGame: React.FC = () => {
       startGame('MULTI');
     } else if (msg.type === 'FORCE_GAME_OVER') {
       gameStateRef.current.status = GameStatus.LEADERBOARD;
-      // Received final signal from server: All players are done.
-      // Now we show the leaderboard. No auto-return timer.
+      // Store reset time
+      mpResetTimeRef.current = msg.payload.resetTime;
+      
       setUiState(prev => ({
           ...prev,
-          players: msg.payload,
+          players: msg.payload.players,
           status: GameStatus.LEADERBOARD
       }));
+    } else if (msg.type === 'KICKED') {
+        // Force return to menu
+        returnToMenu();
+        alert("You have been removed from the team.");
     }
-  }, []);
+  }, [returnToMenu]);
 
   useEffect(() => {
     mpClientRef.current = new MultiplayerClient(handleMpMessage);
@@ -264,6 +306,10 @@ const RunnerGame: React.FC = () => {
 
   const toggleReady = () => {
     mpClientRef.current?.toggleReady(uiState.roomId);
+  };
+
+  const handleKickPlayer = (targetId: string) => {
+    mpClientRef.current?.kickPlayer(uiState.roomId, targetId);
   };
 
   // --- Core Game Logic ---
@@ -312,38 +358,6 @@ const RunnerGame: React.FC = () => {
     }));
   };
 
-  const returnToMenu = useCallback(() => {
-    // 1. Reset Internal Refs
-    gameStateRef.current.status = GameStatus.IDLE;
-    
-    // 2. Disconnect Socket if active to prevent background updates
-    if (mpClientRef.current) {
-        mpClientRef.current.disconnect();
-    }
-    
-    // 3. Completely Reset UI State to Initial Values
-    setUiState({
-        score: 0,
-        timeLeft: DURATION_SECONDS,
-        status: GameStatus.IDLE,
-        activeQuiz: null,
-        quizTimeLeft: 10,
-        roomId: GLOBAL_ROOM_ID,
-        playerName: '',
-        players: [],
-        myId: '',
-        isConnecting: false,
-        showJumpHint: false
-    });
-    
-    // 4. Return to Menu Step
-    setLobbyStep('MENU');
-    
-    // 5. Re-init socket client for next connection
-    mpClientRef.current = new MultiplayerClient(handleMpMessage);
-
-  }, [handleMpMessage]);
-
   const spawnEntities = () => {
     const buffer = GAME_WIDTH * 1.5;
     // Use the persistent cursor instead of calculating from the last platform
@@ -351,36 +365,24 @@ const RunnerGame: React.FC = () => {
 
     while (currentSpawnX < GAME_WIDTH + buffer) {
       
-      // NEW LOGIC (FIX):
-      // Check the ABSOLUTE distance of where this new chunk will be placed.
-      // If the world-distance is less than the distance a player runs in SAFE_ZONE_DURATION, it's safe.
       const absoluteSpawnX = gameStateRef.current.distanceTraveled + currentSpawnX;
       // 60 frames per second * speed * seconds = Total Safe Pixels
       const safeDistance = (GAME_CONFIG.MOVEMENT_SPEED * 60 * GAME_CONFIG.SAFE_ZONE_DURATION) + GAME_WIDTH;
       
       const isSafeZone = absoluteSpawnX < safeDistance;
 
-      // LOGIC UPDATE: Use OBSTACLE_PROBABILITY to trigger a "Hazard".
-      // If Hazard triggered, 50% chance it is a PIT, 50% chance it is a PLATFORM WITH OBSTACLES.
       const isHazard = !isSafeZone && Math.random() < SPAWN_CONFIG.OBSTACLE_PROBABILITY;
-      
-      // FIX FOR SUPER WIDE PITS: 
-      // If the last entity was a pit, we MUST spawn a platform now.
-      // We cannot allow consecutive pits.
       const mustBePlatform = gameStateRef.current.lastEntityWasPit;
 
       const isPit = !mustBePlatform && isHazard && Math.random() < 0.5;
 
       if (isPit) {
         // HAZARD TYPE 1: PIT (Gap)
-        // STRICT CONTROL: 3 * Obstacle Width
         const gap = OBSTACLE_SIZE.width * 3; 
         currentSpawnX += gap;
         gameStateRef.current.lastEntityWasPit = true;
       } else {
         // HAZARD TYPE 2: PLATFORM (with potential obstacles) OR SAFE PLATFORM
-        
-        // Use SPAWN_CONFIG for platform width
         const platformWidth = SPAWN_CONFIG.MIN_PLATFORM_WIDTH + Math.random() * (SPAWN_CONFIG.MAX_PLATFORM_WIDTH - SPAWN_CONFIG.MIN_PLATFORM_WIDTH);
         const newPlatform: Platform = {
           id: Date.now() + Math.random(),
@@ -396,18 +398,13 @@ const RunnerGame: React.FC = () => {
         const startX = currentSpawnX + 50;
         const addedObstacles: Obstacle[] = [];
 
-        // Obstacle Spawning Logic
-        // If isHazard is true (and it wasn't a pit), then we MUST spawn obstacles here to satisfy the hazard condition.
         if (isHazard) {
             const minObs = SPAWN_CONFIG.MIN_OBSTACLES_PER_PLATFORM;
             const maxObs = SPAWN_CONFIG.MAX_OBSTACLES_PER_PLATFORM;
             const numObs = Math.floor(Math.random() * (maxObs - minObs + 1)) + minObs;
 
             for(let k=0; k < numObs; k++) {
-                 // Try to spread them out slightly if multiple
                  const obsX = startX + Math.random() * availableWidth;
-                 
-                 // Simple check to avoid stacking obstacles exactly on top of each other
                  const overlapsOther = addedObstacles.some(o => Math.abs(o.x - obsX) < 40);
                  
                  if (!overlapsOther) {
@@ -425,8 +422,6 @@ const RunnerGame: React.FC = () => {
             }
         }
 
-        // Coins spawning logic using Config
-        // Coins can appear on both Safe Platforms and Obstacle Platforms
         const numCoins = Math.floor(Math.random() * (SPAWN_CONFIG.MAX_COINS_PER_PLATFORM - SPAWN_CONFIG.MIN_COINS_PER_PLATFORM + 1)) + SPAWN_CONFIG.MIN_COINS_PER_PLATFORM;
         for(let i=0; i<numCoins; i++) {
           const coinW = 20;
@@ -686,9 +681,7 @@ const RunnerGame: React.FC = () => {
                 if (gameStateRef.current.status === GameStatus.PLAYING || gameStateRef.current.status === GameStatus.QUIZ) {
                     handleVictory(); 
                 }
-                
-                // CRITICAL FIX: In Multiplayer, do NOT transition to LEADERBOARD locally based on time.
-                // We stay in WAITING_RESULTS until the server sends 'FORCE_GAME_OVER' (meaning ALL players are done).
+                // WAITING_RESULTS state persists until server sends FORCE_GAME_OVER
              } else {
                 gameStateRef.current.timeLeft = remaining;
              }
@@ -699,6 +692,14 @@ const RunnerGame: React.FC = () => {
             gameStateRef.current.timeLeft = 0;
             handleVictory();
          }
+    }
+
+    // --- LEADERBOARD TIMER LOGIC ---
+    // Update UI for the reset countdown if in leaderboard mode
+    if (gameStateRef.current.status === GameStatus.LEADERBOARD && mpResetTimeRef.current) {
+        const resetRemaining = Math.max(0, (mpResetTimeRef.current - Date.now()) / 1000);
+        // Note: We don't change game status here, we wait for server ROOM_UPDATE or KICKED.
+        // We just piggyback on the UiState updates for rendering.
     }
 
     // --- BROADCAST SCORE ---
@@ -722,6 +723,9 @@ const RunnerGame: React.FC = () => {
     const integerTime = Math.ceil(gameStateRef.current.timeLeft);
     if (integerTime !== Math.ceil(uiState.timeLeft) && integerTime >= 0) {
         setUiState(prev => ({ ...prev, timeLeft: gameStateRef.current.timeLeft }));
+    } else if (gameStateRef.current.status === GameStatus.LEADERBOARD) {
+        // Force refresh for leaderboard countdown
+        setUiState(prev => ({...prev}));
     }
 
     draw(ctx, time / 16);
@@ -957,6 +961,9 @@ const RunnerGame: React.FC = () => {
 
   const renderWaitingRoom = () => {
     const me = uiState.players.find(p => p.id === uiState.myId);
+    // Identify if "I" am the captain (Index 0 is captain)
+    const isCaptain = uiState.players.length > 0 && uiState.players[0].id === uiState.myId;
+    
     const hasEnoughPlayers = uiState.players.length === GAME_CONFIG.REQUIRED_PLAYERS;
     
     return (
@@ -972,12 +979,30 @@ const RunnerGame: React.FC = () => {
                 </div>
                 
                 <div className="grid grid-cols-2 gap-4 mb-8">
-                    {uiState.players.map(p => (
-                        <div key={p.id} className={`p-4 border ${p.isReady ? 'border-green-500 bg-green-900/20' : 'border-gray-600 bg-gray-900'} flex justify-between items-center transition-all`}>
-                            <span className="text-white font-mono">{p.name} {p.id === uiState.myId ? '(YOU)' : ''}</span>
-                            <span className={`text-xs px-2 py-1 ${p.isReady ? 'bg-green-500 text-black' : 'bg-gray-700 text-gray-400'}`}>
-                                {p.isReady ? 'READY' : 'WAITING'}
-                            </span>
+                    {uiState.players.map((p, index) => (
+                        <div key={p.id} className={`p-4 border ${p.isReady ? 'border-green-500 bg-green-900/20' : 'border-gray-600 bg-gray-900'} flex justify-between items-center transition-all relative`}>
+                            <div className="flex flex-col">
+                                <span className="text-white font-mono flex items-center gap-2">
+                                    {index === 0 && <span className="text-yellow-500 text-xs">[CPT]</span>}
+                                    {p.name} {p.id === uiState.myId ? '(YOU)' : ''}
+                                </span>
+                            </div>
+                            
+                            <div className="flex items-center gap-2">
+                                <span className={`text-xs px-2 py-1 ${p.isReady ? 'bg-green-500 text-black' : 'bg-gray-700 text-gray-400'}`}>
+                                    {p.isReady ? 'READY' : 'WAITING'}
+                                </span>
+                                
+                                {isCaptain && p.id !== uiState.myId && (
+                                    <button 
+                                        onClick={() => handleKickPlayer(p.id)}
+                                        className="text-red-500 hover:text-white hover:bg-red-500 border border-red-900 px-2 py-1 text-xs font-bold"
+                                        title="Kick Agent"
+                                    >
+                                        X
+                                    </button>
+                                )}
+                            </div>
                         </div>
                     ))}
                     {[...Array(Math.max(0, GAME_CONFIG.REQUIRED_PLAYERS - uiState.players.length))].map((_, i) => (
@@ -1009,13 +1034,20 @@ const RunnerGame: React.FC = () => {
   const renderLeaderboard = () => {
      const sortedPlayers = [...uiState.players].sort((a, b) => b.score - a.score);
      
+     // Calculate remaining seconds for the purge
+     let resetSeconds = 0;
+     if (mpResetTimeRef.current) {
+         resetSeconds = Math.max(0, Math.ceil((mpResetTimeRef.current - Date.now()) / 1000));
+     }
+
      return (
         <div className="absolute inset-0 flex items-center justify-center bg-black/90 z-40 backdrop-blur-md">
             <div className="w-full max-w-lg bg-[#0a0a12] border-2 border-yellow-500 p-8 shadow-[0_0_50px_rgba(234,179,8,0.3)]">
                 <div className="flex justify-between items-start mb-6">
                     <h2 className="text-3xl text-yellow-400 font-black tracking-widest">{GAME_TEXT.LEADERBOARD_TITLE}</h2>
                     <div className="text-right">
-                        {/* Auto Return Display Removed */}
+                         <div className="text-xs text-gray-400 uppercase">System Reset In</div>
+                         <div className="text-2xl text-red-500 font-mono animate-pulse">{resetSeconds}s</div>
                     </div>
                 </div>
                 
@@ -1029,10 +1061,8 @@ const RunnerGame: React.FC = () => {
                     ))}
                 </div>
 
-                <div className="flex justify-center gap-4">
-                    <button onClick={returnToMenu} className="px-8 py-3 bg-gray-800 hover:bg-gray-700 text-white font-bold border border-gray-600 w-full uppercase">
-                        {GAME_TEXT.BTN_MENU}
-                    </button>
+                <div className="flex justify-center text-center text-gray-500 text-xs">
+                    <p>SESSION WILL CLOSE AUTOMATICALLY. CAPTAIN WILL REMAIN.</p>
                 </div>
             </div>
         </div>
