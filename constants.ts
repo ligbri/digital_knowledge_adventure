@@ -1,8 +1,8 @@
 
 // --- MANUAL CONFIGURATION ---
 export const GAME_CONFIG = {
-  REQUIRED_PLAYERS: 2, // Set the number of players required to start
-  MOVEMENT_SPEED: 4,    // Increased slightly for better flow and wider jumps
+  REQUIRED_PLAYERS: 3, // Set the number of players required to start
+  MOVEMENT_SPEED: 2,    // Increased slightly for better flow and wider jumps
   SAFE_ZONE_DURATION: 3, // Seconds at start with no obstacles (New Feature)
   MAX_LIVES: 2,          // Total lives per run (New Feature)
 };
